@@ -1,11 +1,13 @@
-# flake8: noqa
 import logging
 import os
 import time
+from http import HTTPStatus
 
 import requests
 import telegram
 from dotenv import find_dotenv, load_dotenv
+
+import exceptions
 
 load_dotenv(find_dotenv())
 
@@ -25,85 +27,93 @@ HOMEWORK_VERDICTS = {
 }
 
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    filename='program.log',
-    format='%(asctime)s, %(levelname)s, %(message)s, %(name)s'
-)
-
-
 def check_tokens():
     """Проверка на наличие необходимых токенов."""
-    if PRACTICUM_TOKEN and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        return True
-    else:
-        logging.critical('Крит. ошибка, отсутствует токен!')
-        raise SystemExit('Отсутствуют токены, работа невозможна!')
+    return all((PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID))
+
 
 def send_message(bot, message):
-    """Функция для отправки сообщений в Telegram"""
+    """Функция для отправки сообщений в Telegram."""
     try:
+        logging.debug(f'Начинаю отправку сообщения: "{message:10}"')
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logging.debug(f'Успешно отправлено сообщение: "{message:10}"')
     except telegram.TelegramError as e:
-        logging.error(f'Ошибка отправки сообщения: "{message:10}". Ошибка: {e}')
+        logging.error(
+            f'Ошибка отправки сообщения: "{message:10}". Ошибка: {e}'
+        )
+    else:
+        logging.debug(f'Успешно отправлено сообщение: "{message:10}"')
+
 
 def get_api_answer(current_timestamp):
-    """Обращаемся по API к серверу ЯП, чтобы получить данные о домашней работе"""
+    """Обращаемся по API к ЯП, чтобы получить данные о домашней работе."""
     payload = {'from_date': current_timestamp}
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
-        if response.status_code != 200:
-            logging.error(f'Ошибка! Код ответа сервера: {response.status_code}')
-            raise Exception(f'Ошибка код: {response.status_cod}')
+        if response.status_code != HTTPStatus.OK:
+            logging.error(
+                f'Ошибка! Код ответа сервера: {response.status_code}'
+            )
+            raise exceptions.HTTPStatusCodeError(
+                f'Ошибка код: {response.status_cod}'
+            )
         return response.json()
 
     except requests.exceptions.RequestException as e:
-        logging.error(f'Ошибка при получении данных: {e}')
-        raise Exception(f'Ошибка при получении данных: {e}')
+        raise exceptions.NoConnectionError(
+            f'Ошибка при получении данных: {e}'
+        )
+
 
 def check_response(response):
-    """Проверка API ответа на корректность данных"""
-    try:
-        api_response = response['homeworks']
-    except KeyError as e:
-        logging.error(f'В ответе нет ключа "homeworks": {e}')
+    """Проверка API ответа на корректность данных."""
+    logging.debug("Начинаю проверку данных ответа")
+    if not isinstance(response, dict):
+        logging.error('Ответ не содержит словаря!')
+        raise TypeError('Ответ не содержит словаря!')
+    api_response = response.get('homeworks')
+    if api_response is None:
+        logging.error('В ответе нет ключа "homeworks')
+        raise KeyError('В ответе нет ключа "homeworks"')
     if not isinstance(api_response, list):
         logging.error('Ответ не содержит в себе листа!')
         raise TypeError('Ответ не содержит в себе листа!')
+    logging.debug("Данные прошли проверку")
     return api_response
 
+
 def parse_status(homework):
-    """Парсинг ответа от сервера ЯП"""
+    """Парсинг ответа от сервера ЯП."""
     if 'status' not in homework:
-        logging.error('Ключ "status" отсутствует в ответе!')
         raise KeyError('Ключ "status" отсутствует в ответе!')
     if 'homework_name' not in homework:
-        logging.error('Ключ "homework_name" отсутствует в ответе!')
         raise KeyError('Ключ "homework_name" отсутствует в ответе!')
     if homework['status'] not in HOMEWORK_VERDICTS:
-        logging.error('Статус задания неизвестен, либо отсутвует')
         raise ValueError('Статус задания неизвестен, либо отсутвует')
     homework_name = homework['homework_name']
     verdict = HOMEWORK_VERDICTS.get(homework['status'])
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
-#flake8: noqa
+
 def main():
     """Основная логика работы бота."""
     logging.info('Бот начал процедуру запуска!')
-    if check_tokens():
-        logging.info('Токены всевластия обнаружены, продолжаю!')
+    if not check_tokens():
+        logging.critical('Крит. ошибка, отсутствует токен!')
+        raise SystemExit('Отсутствуют токены, работа невозможна!')
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
-    #current_timestamp = 0
     status_flag = ''
     while True:
         current_timestamp = int(time.time())
         try:
             response = get_api_answer(current_timestamp)
             if not check_response(response):
-                send_message(bot, 'Проверка завершена, статус работы не изменился!')
-                logging.debug('Проверка завершена, статус работы не изменился!')
+                send_message(
+                    bot, 'Проверка завершена, статус работы не изменился!'
+                )
+                logging.debug(
+                    'Проверка завершена, статус работы не изменился!'
+                )
                 continue
             homeworks = response.get('homeworks')[0]
             msg = parse_status(homeworks)
@@ -122,4 +132,9 @@ def main():
 
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.DEBUG,
+        filename='YP_bot_telegram.log',
+        format='%(asctime)s, %(levelname)s, %(message)s, %(name)s'
+    )
     main()
